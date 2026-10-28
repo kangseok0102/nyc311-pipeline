@@ -1,0 +1,26 @@
+# data & warehouse (재생성 가능하므로 커밋하지 않음)
+data/
+*.duckdb
+*.duckdb.wal
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# secrets
+.env
+
+# dbt (2주차~)
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# airflow / astro (5주차~)
+airflow/.astro/
+airflow/logs/
+
+.DS_Store
