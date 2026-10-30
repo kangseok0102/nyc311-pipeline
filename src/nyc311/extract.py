@@ -24,7 +24,8 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, List
+from datetime import timedelta
 
 import requests
 
@@ -127,7 +128,8 @@ def partition_path(window: str, day: date, root: Path = config.RAW_DIR) -> Path:
     형식: <root>/window=<window>/date=<YYYY-MM-DD>/data.parquet
     (Hive 스타일 파티션 → DuckDB/BigQuery 가 그대로 인식한다)
     """
-    raise NotImplementedError
+    return root / f"window={window}" / f"date={day.isoformat()}" / "data.parquet"
+    
 
 
 def write_parquet(rows: list[dict[str, str | None]], path: Path) -> None:
@@ -161,12 +163,13 @@ def extract_day(
 # --------------------------------------------------------------------------
 def yesterday_nyc() -> date:
     """뉴욕 시간 기준 '어제' 날짜. (서버가 UTC 여도 뉴욕 기준이어야 한다 → config.SOURCE_TZ)"""
-    raise NotImplementedError
+    today_nyc = datetime.now(tz=config.SOURCE_TZ).date()
+    return today_nyc - timedelta(days=1)
 
-
-def daterange(start: date, end: date) -> Iterator[date]:
+def daterange(start: date, end: date) -> list[date]:
     """start 부터 end 까지(양끝 포함) 하루씩 yield."""
-    raise NotImplementedError
+    n_days = (end - start).days + 1
+    return [start + timedelta(days=i) for i in range(n_days)]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
