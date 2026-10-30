@@ -28,6 +28,7 @@ from typing import Any, Iterator, List
 from datetime import timedelta
 
 import requests
+import json
 
 from nyc311 import config
 
@@ -109,14 +110,38 @@ def normalize_record(rec: dict[str, Any]) -> dict[str, str | None]:
     - dict/list 같은 중첩 값(location 등)은 JSON 문자열로. 키 순서가 항상 같게 하려면?
     - ':' 로 시작하는 시스템 필드는 '_sys_' 접두어로 이름을 바꾼다 (':id' → '_sys_id')
     """
-    raise NotImplementedError
+    result = {}
+
+    for key, value in rec.items():
+        if key.startswith(":"):
+            col = "_sys_" + key[1:]
+        else:
+            col = key
+        
+        if value is None:
+            result[col] = None
+        elif isinstance(value, (dict, list)):
+            result[col] = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        else:
+            result[col] = str(value)
+    
+    return result
 
 
 def to_rows(
     pages: Iterator[list[dict[str, Any]]], window: str, day: date, extracted_at: datetime
 ) -> list[dict[str, str | None]]:
     """모든 페이지의 레코드를 정규화하고 META_COLUMNS 값을 붙여 행 리스트로 만든다."""
-    raise NotImplementedError
+    meta = {
+        "_window": window,
+        "_partition_date": day.isoformat(),
+        "_extracted_at": extracted_at.isoformat(),
+    }
+    rows = []
+    for page in pages:
+        for rec in page:
+            rows.append({**normalize_record(rec), **meta})
+    return rows
 
 
 # --------------------------------------------------------------------------
