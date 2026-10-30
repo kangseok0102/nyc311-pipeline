@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterator, List
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 import json
@@ -79,7 +79,31 @@ def build_params(window: str, day: date, limit: int, offset: int) -> dict[str, s
     - 시스템 필드(:id, :updated_at)는 기본으로 응답에 안 온다. $select 로 함께 받는 법은?
     - 페이지를 넘길 때 결과 순서가 흔들리면 행이 누락/중복된다. 무엇으로 정렬해야 할까?
     """
-    raise NotImplementedError
+    params = {}
+
+    if window == "updated":
+        start = datetime.combine(day, datetime.min.time(), tzinfo=config.SOURCE_TZ).astimezone(timezone.utc)
+        end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=config.SOURCE_TZ).astimezone(timezone.utc)
+        start_s = start.strftime("%Y-%m-%dT%H:%M:%S")
+        end_s = end.strftime("%Y-%m-%dT%H:%M:%S")
+
+    elif window == "created":
+        start_s = day.isoformat() + "T00:00:00"
+        end_s = (day + timedelta(days=1)).isoformat() + "T00:00:00"
+        
+    else:
+        raise ValueError(f"Unknown window: {window}")
+
+    where = f"{WINDOW_FIELDS[window]} >= '{start_s}' AND {WINDOW_FIELDS[window]} < '{end_s}'"
+
+    params = {
+        "$select": ":*, *",
+        "$where": where,
+        "$order": ":id",
+        "$limit": str(limit),
+        "$offset": str(offset),}
+
+    return params
 
 
 def fetch_day(
