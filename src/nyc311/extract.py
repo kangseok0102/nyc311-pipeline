@@ -22,19 +22,17 @@ Tests: tests/test_pipeline.py  →  pytest -q
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator, List
-from datetime import date, datetime, timedelta, timezone
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
-import json
 
 from nyc311 import config
 
@@ -91,8 +89,8 @@ def build_params(window: str, day: date, limit: int, offset: int) -> dict[str, s
     params = {}
 
     if window == "updated":
-        start = datetime.combine(day, datetime.min.time(), tzinfo=config.SOURCE_TZ).astimezone(timezone.utc)
-        end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=config.SOURCE_TZ).astimezone(timezone.utc)
+        start = datetime.combine(day, datetime.min.time(), tzinfo=config.SOURCE_TZ).astimezone(UTC)
+        end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=config.SOURCE_TZ).astimezone(UTC)
         start_s = start.strftime("%Y-%m-%dT%H:%M:%S")
         end_s = end.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -245,7 +243,7 @@ def extract_day(
     if session is None:
         session = build_session()
 
-    extracted_at = datetime.now(tz=timezone.utc)
+    extracted_at = datetime.now(tz=UTC)
     pages = fetch_day(session, day, window)
     rows = to_rows(pages, window, day, extracted_at)
     path = partition_path(window, day, root)

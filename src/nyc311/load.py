@@ -1,17 +1,18 @@
-"""Parquet 파티션 → DuckDB raw 테이블 적재.
+"""Load Parquet partitions into the DuckDB raw table.
 
-요구사항 (이 요구사항대로 구현하세요)
-- 같은 날짜를 여러 번 적재해도 결과가 같아야 한다(멱등). 재실행·백필·Airflow 재시도 대비.
-- 소스에 새 컬럼이 생겨도 적재가 깨지지 않아야 한다 (raw 는 전부 VARCHAR).
-- 적재 이력을 raw._load_log 에 남긴다 → 이후 dbt source freshness / 모니터링에 사용.
+Requirements
+- Loading the same date multiple times must give the same result (idempotent),
+  so re-runs, backfills and Airflow retries are safe.
+- New columns appearing in the source must not break the load (raw is all VARCHAR).
+- Every load is recorded in raw._load_log, later used for dbt source freshness / monitoring.
 
-사용 예
-    python -m nyc311.load                                     # 어제, updated 윈도우
+Usage
+    python -m nyc311.load                                     # yesterday, updated window
     python -m nyc311.load --date 2026-10-18 --window created
     python -m nyc311.load --start 2026-09-01 --end 2026-09-30 --window created
-    python -m nyc311.load --all                               # data/raw 아래 전부 재적재
+    python -m nyc311.load --all                               # reload every partition under data/raw
 
-채점 기준: tests/test_pipeline.py  →  pytest -q
+Tests: tests/test_pipeline.py  →  pytest -q
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from datetime import date
 from pathlib import Path
 
 from nyc311 import config
-from nyc311.extract import WINDOW_FIELDS, daterange, partition_path, yesterday_nyc  # noqa: F401
+from nyc311.extract import WINDOW_FIELDS, daterange, partition_path, yesterday_nyc
 
 log = logging.getLogger(__name__)
 
@@ -38,75 +39,143 @@ def connect(db_path: Path = config.DUCKDB_PATH):
 
 
 def _sql_str(s: str) -> str:
-    """SQL 문자열 리터럴 (작은따옴표 이스케이프). read_parquet() 에 경로를 넣을 때 사용."""
+    """Quote a string as a SQL literal (escapes single quotes). Use it to pass paths to read_parquet()."""
     return "'" + s.replace("'", "''") + "'"
 
 
 def ensure_tables(con) -> None:
-    """raw 스키마, raw 테이블, 적재 로그 테이블을 (없으면) 만든다.
+    """Create the raw schema, the raw table and the load-log table if they do not exist.
 
-    생각해 볼 것
-    - raw 테이블의 소스 컬럼 목록은 미리 알 필요가 없다. 처음엔 메타 컬럼만으로 시작해도 된다.
-      메타 컬럼: _window, _partition_date, _extracted_at (파일에서 옴)
-                 _source_file, _loaded_at (적재 시점에 붙임)
-    - 로그 테이블엔 무엇이 있어야 freshness 를 판단할 수 있을까? (테스트가 기대하는 행 수도 확인)
-    - 몇 번을 호출해도 안전해야 한다.
+    Things to consider
+    - You don't need to know the source columns up front. Start with the metadata columns only:
+        from the file:   _window, _partition_date, _extracted_at
+        added at load:   _source_file, _loaded_at
+    - What does the log table need so that freshness can be judged?
+      (Also check how many log rows the tests expect.)
+    - Must be safe to call any number of times.
     """
-    raise NotImplementedError
+    con.execute(f"CREATE SCHEMA IF NOT EXISTS {config.RAW_SCHEMA}")
+    con.execute(f"CREATE TABLE IF NOT EXISTS {RAW} (_window TEXT NOT NULL, _partition_date TEXT NOT NULL, _extracted_at TEXT NOT NULL, _source_file TEXT NOT NULL, _loaded_at TIMESTAMP WITH TIME ZONE NOT NULL)")
+    con.execute(f"CREATE TABLE IF NOT EXISTS {LOAD_LOG} (_window TEXT NOT NULL, _partition_date TEXT NOT NULL, _row_count BIGINT NOT NULL, _source_file TEXT NOT NULL, _loaded_at TIMESTAMP WITH TIME ZONE NOT NULL)")
 
 
 def evolve_schema(con, parquet_file: Path) -> list[str]:
-    """파일에는 있는데 테이블에는 없는 컬럼을 VARCHAR 로 추가하고, 추가한 컬럼명 리스트를 돌려준다.
+    """Add columns that exist in the file but not in the table (as VARCHAR); return the added names.
 
-    힌트
-    - DuckDB 에서 테이블/쿼리의 컬럼 목록을 보는 명령: DESCRIBE
-    - 컬럼명에 특수문자가 있을 수 있으니 따옴표로 감싸자.
+    Hints
+    - The DuckDB command that lists the columns of a table or query: DESCRIBE
+    - Column names may contain special characters, so wrap them in double quotes.
     """
-    raise NotImplementedError
+    file_columns = con.execute(f"DESCRIBE SELECT * FROM read_parquet({_sql_str(str(parquet_file))})").fetchall()
+    table_columns = con.execute(f"DESCRIBE {RAW}").fetchall()
+
+    added_columns = []
+    
+    for col in file_columns:
+        name = col[0]
+        names = set()
+        names.update(c[0] for c in table_columns)
+        
+        if name not in names:
+            added_columns.append(name)
+    
+    for col in added_columns:
+        con.execute(f'ALTER TABLE {RAW} ADD COLUMN "{col}" VARCHAR')
+
+    log.info(f"Added columns to {RAW}: {', '.join(added_columns)}")
+
+    return added_columns
+
 
 
 def load_partition(con, window: str, day: date, root: Path = config.RAW_DIR) -> int:
-    """파티션 하나를 raw 테이블에 적재하고, 적재 후 그 파티션의 행 수를 돌려준다.
+    """Load one partition into the raw table; return that partition's row count after the load.
 
-    생각해 볼 것
-    - 파일이 없으면 조용히 넘어가지 말고 분명한 에러를 낸다.
-    - '멱등'을 어떤 SQL 조합으로 만들까? 그 조합이 중간에 실패하면 테이블은 어떤 상태가 될까?
-      → 트랜잭션.
-    - 파일 컬럼과 테이블 컬럼의 '순서'가 다를 수 있다. 위치가 아니라 이름으로 맞춰 넣는 INSERT 문법이
-      DuckDB 에 있다.
-    - 적재가 성공했을 때만 _load_log 에 기록이 남아야 한다.
+    Things to consider
+    - If the file is missing, raise a clear error instead of silently skipping.
+    - Which combination of SQL statements makes the load idempotent?
+      If that combination fails halfway, what state is the table left in?  → transactions.
+    - The column ORDER in the file and the table can differ. DuckDB has an INSERT syntax that
+      matches columns by NAME rather than by position.
+    - A row should be written to _load_log only when the load succeeds.
     """
-    raise NotImplementedError
+    partition_file = partition_path(window, day, root)
+    if not partition_file.exists():
+        raise FileNotFoundError(f"Partition file not found: {partition_file}")
+
+    ensure_tables(con)
+    evolve_schema(con, partition_file)
+    src_file = str(partition_file)
+
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute(f"DELETE FROM {RAW} WHERE _window = ? AND _partition_date = ?", (window, str(day)))
+        con.execute(f"INSERT INTO {RAW} BY NAME SELECT *, ? AS _source_file, now() AS _loaded_at FROM read_parquet(?)", (src_file, src_file))
+        row_count = con.execute(f"SELECT COUNT(*) FROM {RAW} WHERE _window = ? AND _partition_date = ?", (window, str(day))).fetchone()[0]
+        con.execute(f"INSERT INTO {LOAD_LOG} (_window, _partition_date, _row_count, _source_file, _loaded_at) VALUES (?, ?, ?, ?, now())", (window, str(day), row_count, src_file))
+        con.execute("COMMIT")
+    
+    except:
+        con.execute("ROLLBACK")
+        raise 
+
+    return row_count
+
 
 
 def discover_partitions(root: Path = config.RAW_DIR) -> list[tuple[str, date]]:
-    """root 아래 모든 파티션 파일을 찾아 (window, date) 목록으로 돌려준다. (--all 옵션용)"""
-    raise NotImplementedError
+    """Find every partition file under root and return them as (window, date) pairs. (for --all)"""
+    found = []
 
+    for file in root.glob("*.parquet"):
+        # Extract window and date from the file path
+        window = file.parent.name
+        date = date.fromisoformat(file.stem)
+        found.append((window, date))
+
+    return found
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Load NYC 311 Parquet partitions into DuckDB")
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--date", type=date.fromisoformat)
-    g.add_argument("--start", type=date.fromisoformat)
-    g.add_argument("--all", action="store_true", help="data/raw 아래 모든 파티션 재적재")
-    p.add_argument("--end", type=date.fromisoformat)
+    g.add_argument("--date", type=date.fromisoformat, help="single date (default: yesterday in New York)")
+    g.add_argument("--start", type=date.fromisoformat, help="backfill start date (inclusive)")
+    g.add_argument("--all", action="store_true", help="reload every partition under data/raw")
+    p.add_argument("--end", type=date.fromisoformat, help="backfill end date (inclusive)")
     p.add_argument("--window", choices=sorted(WINDOW_FIELDS), default="updated")
     args = p.parse_args(argv)
     if bool(args.start) != bool(args.end):
-        p.error("--start 와 --end 는 함께 써야 합니다")
+        p.error("--start and --end must be used together")
     return args
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI 진입점. 대상 (window, date) 목록을 정하고 load_partition 을 반복 호출한다.
+    """CLI entry point. Decide the target (window, date) list and call load_partition for each.
 
-    연결은 예외가 나도 반드시 닫히게 하자.
+    Make sure the connection is closed even if an exception is raised.
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
-    raise NotImplementedError
+    if args.all:
+        targets = discover_partitions()
+    elif args.start and args.end:
+        targets = [(args.window, d) for d in daterange(args.start, args.end)]
+    else:
+        targets = [(args.window, args.date or yesterday_nyc())]
 
+    con = connect()
+    try:
+        total = 0
+        for window, day in targets:
+            log.info(f"Loading partition: window={window}, date={day}")
+            count = load_partition(con, window, day)
+            log.info(f"Loaded {count} rows for partition: window={window}, date={day}")
+            total += count
+        log.info(f"Total rows loaded: {total}")
+    finally:
+        con.close() 
+
+    return log, total
 
 if __name__ == "__main__":
     main()

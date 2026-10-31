@@ -116,7 +116,7 @@ def test_cli_args_validation():
 pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
 
-from nyc311 import load  # noqa: E402
+from nyc311 import load
 
 
 def _extract(tmp_path, pages, day=DAY):
