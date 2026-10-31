@@ -120,7 +120,25 @@ def fetch_day(
     - HTTP 에러는 삼키지 말고 드러내야 Airflow 가 실패를 안다.
     - 테스트의 FakeSession.get(url, params, timeout) 시그니처에 맞춰 호출하자.
     """
-    raise NotImplementedError
+    url = f"https://{config.SOCRATA_DOMAIN}/resource/{config.DATASET_ID}.json"
+    offset = 0 
+
+    while True:
+        
+        params = build_params(window, day, page_size, offset)
+        log.info("Fetching %s %s (offset=%d)", window, day.isoformat(), offset)
+        response = session.get(url, params=params, timeout=config.REQUEST_TIMEOUT_S)
+        response.raise_for_status()
+        page = response.json()
+        
+        if not page:return
+        yield page
+
+        if len(page) < page_size:return
+        offset += len(page)
+
+        
+
 
 
 # --------------------------------------------------------------------------
