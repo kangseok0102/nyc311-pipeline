@@ -25,3 +25,7 @@ airflow/logs/
 
 .DS_Store
 dbt/.user.yml
+
+# scratch experiments
+scratch_*.py
+scratch_out/
