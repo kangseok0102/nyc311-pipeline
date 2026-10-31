@@ -12,6 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+dbt = ["dbt-core==1.12.6", "dbt-duckdb==1.11.1"]
 
 [build-system]
 requires = ["setuptools>=68"]

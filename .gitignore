@@ -24,3 +24,4 @@ airflow/.astro/
 airflow/logs/
 
 .DS_Store
+dbt/.user.yml

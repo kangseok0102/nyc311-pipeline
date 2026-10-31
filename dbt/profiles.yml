@@ -1,0 +1,8 @@
+nyc311:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      # Same warehouse file the Python loader writes to (relative to this dbt/ folder)
+      path: "{{ env_var('NYC311_DBT_DUCKDB_PATH', '../data/warehouse/nyc311.duckdb') }}"
+      threads: 4
